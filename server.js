@@ -6,30 +6,46 @@ const app = express();
 app.use('/', createProxyMiddleware({
     target: 'https://www.instagram.com',
     changeOrigin: true,
-    selfHandleResponse: true, // 응답 헤더 및 바디 수정을 위해 필수
+    secure: true,
+    selfHandleResponse: true,
     
-    // 1. 요청 보낼 때: 인스타 서버가 차단하지 않도록 정상 브라우저처럼 위장
+    // 쿠키 도메인 및 경로를 내 프록시 도메인으로 자동 리라이트
+    cookieDomainRewrite: {
+        "instagram.com": "",
+        ".instagram.com": "",
+        "*": ""
+    },
+    cookiePathRewrite: {
+        "*": "/"
+    },
+
     on: {
+        // 1. 브라우저 -> 인스타그램으로 요청 보낼 때
         proxyReq: (proxyReq, req, res) => {
-            proxyReq.setHeader('Referer', 'https://www.instagram.com/');
+            // 인스타그램이 의심하지 않도록 필수 헤더 조작
+            proxyReq.setHeader('Host', 'www.instagram.com');
             proxyReq.setHeader('Origin', 'https://www.instagram.com');
-            // Gzip 압축이 풀려야 분석이 원활하도록 인코딩 조절
-            proxyReq.setHeader('Accept-Encoding', 'identity');
+            proxyReq.setHeader('Referer', 'https://www.instagram.com/');
+            proxyReq.setHeader('Accept-Encoding', 'identity'); // 압축 해제
         },
 
-        // 2. 응답 받을 때: 릴스/화면 차단 유발하는 보안 헤더(CSP, Frame) 강제 삭제
+        // 2. 인스타그램 -> 브라우저로 응답 내려줄 때
         proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-            // 브라우저 렌더링 차단 헤더 제거
+            // 브라우저 화면 차단 및 보안 헤더 제거
             delete proxyRes.headers['x-frame-options'];
             delete proxyRes.headers['content-security-policy'];
             delete proxyRes.headers['content-security-policy-report-only'];
             delete proxyRes.headers['cross-origin-resource-policy'];
 
-            // 쿠키 도메인을 내 프록시 도메인으로 허용
-            if (proxyRes.headers['set-cookie']) {
-                proxyRes.headers['set-cookie'] = proxyRes.headers['set-cookie'].map(cookie => 
-                    cookie.replace(/Domain=\.?instagram\.com/gi, '')
-                );
+            // Set-Cookie 헤더에서 instagram.com 도메인 강제 제거 (내 도메인에 쿠키가 구워지도록)
+            const setCookie = proxyRes.headers['set-cookie'];
+            if (setCookie) {
+                proxyRes.headers['set-cookie'] = (Array.isArray(setCookie) ? setCookie : [setCookie]).map(cookie => {
+                    return cookie
+                        .replace(/;\s*Domain=[^;]+/gi, '') // Domain 강제 삭제
+                        .replace(/;\s*SameSite=Lax/gi, '; SameSite=None') // 크로스사이트 허용
+                        .replace(/;\s*SameSite=Strict/gi, '; SameSite=None');
+                });
             }
 
             return responseBuffer;
