@@ -7,45 +7,57 @@ app.use('/', createProxyMiddleware({
     target: 'https://www.instagram.com',
     changeOrigin: true,
     secure: true,
+    autoRewrite: true,       // 301/302 리다이렉트 시 호스트 자동 변환
+    followRedirects: false,   // 브라우저가 프록시 주소로 리다이렉트 받도록 설정
     selfHandleResponse: true,
-    
-    // 쿠키 도메인 및 경로를 내 프록시 도메인으로 자동 리라이트
+
     cookieDomainRewrite: {
-        "instagram.com": "",
-        ".instagram.com": "",
-        "*": ""
+        "*": "" // 모든 쿠키의 도메인을 내 프록시 도메인으로 강제 변경
     },
     cookiePathRewrite: {
         "*": "/"
     },
 
     on: {
-        // 1. 브라우저 -> 인스타그램으로 요청 보낼 때
         proxyReq: (proxyReq, req, res) => {
-            // 인스타그램이 의심하지 않도록 필수 헤더 조작
             proxyReq.setHeader('Host', 'www.instagram.com');
             proxyReq.setHeader('Origin', 'https://www.instagram.com');
             proxyReq.setHeader('Referer', 'https://www.instagram.com/');
-            proxyReq.setHeader('Accept-Encoding', 'identity'); // 압축 해제
+            proxyReq.setHeader('Accept-Encoding', 'identity');
         },
 
-        // 2. 인스타그램 -> 브라우저로 응답 내려줄 때
         proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-            // 브라우저 화면 차단 및 보안 헤더 제거
+            // 1. [핵심] 로그인 성공 시 인스타가 instagram.com으로 튕겨내는 리다이렉트 가로채기
+            if (proxyRes.headers['location']) {
+                const myHost = req.headers.host; // 예: insta-proxy-1-hhfh.onrender.com
+                proxyRes.headers['location'] = proxyRes.headers['location']
+                    .replace(/https?:\/\/(www\.)?instagram\.com/gi, `https://${myHost}`);
+            }
+
+            // 2. 보안 헤더 강제 제거
             delete proxyRes.headers['x-frame-options'];
             delete proxyRes.headers['content-security-policy'];
             delete proxyRes.headers['content-security-policy-report-only'];
             delete proxyRes.headers['cross-origin-resource-policy'];
 
-            // Set-Cookie 헤더에서 instagram.com 도메인 강제 제거 (내 도메인에 쿠키가 구워지도록)
+            // 3. 쿠키 속성 변환
             const setCookie = proxyRes.headers['set-cookie'];
             if (setCookie) {
                 proxyRes.headers['set-cookie'] = (Array.isArray(setCookie) ? setCookie : [setCookie]).map(cookie => {
                     return cookie
-                        .replace(/;\s*Domain=[^;]+/gi, '') // Domain 강제 삭제
-                        .replace(/;\s*SameSite=Lax/gi, '; SameSite=None') // 크로스사이트 허용
+                        .replace(/;\s*Domain=[^;]+/gi, '')
+                        .replace(/;\s*SameSite=Lax/gi, '; SameSite=None')
                         .replace(/;\s*SameSite=Strict/gi, '; SameSite=None');
                 });
+            }
+
+            // 4. HTML 내부 하드코딩된 instagram.com 링크를 내 프록시 주소로 치환
+            const contentType = proxyRes.headers['content-type'] || '';
+            if (contentType.includes('text/html')) {
+                let html = responseBuffer.toString('utf8');
+                const myHost = req.headers.host;
+                html = html.replace(/https:\/\/(www\.)?instagram\.com/gi, `https://${myHost}`);
+                return html;
             }
 
             return responseBuffer;
@@ -55,5 +67,5 @@ app.use('/', createProxyMiddleware({
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Bypass Proxy is running on port ${PORT}`);
+    console.log(`Bypass Proxy running on port ${PORT}`);
 });
